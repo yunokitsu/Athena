@@ -1,3 +1,235 @@
+"use strict";
+/*---------------------------------------
+      Athena Bot
+    By: Kendrick Trinh and Hung Bao
+Description:
+
+
+-----------------------------------------*/
+
+
+var Discord = require("discord.js"); //required dependencies
+var wikiSearch = require("nodemw");
+var bot = new Discord.Client();
+var fs = require("fs");
+var request = require('request');
+var cheerio = require('cheerio');
+var PythonShell = require('python-shell');
+var schedule = require('node-schedule');
+const gacha = require('./gacha');
+/* authorize various apis */
+
+try {
+  var auth = require("./auth.json");
+} catch(e){
+  console.log("An auth.json is needed");
+}
+if(auth.bot_token) {
+  console.log("logging in with bot token");
+  bot.login(auth.bot_token);
+}
+// Initialize skills cache and set timer to clear cache after X amount of hours
+let skillsCharLimit = 200;
+let embedFieldCharLimit = 1000;
+let skillsCache = {"one":"first"};
+let supportSkillsCache = {"one":"first"};
+let timerId = setInterval(()=>clearCache(), 172800000); // clear cache every 6 hours
+let timerId2 = setInterval(()=>clearSupportCache(), 172800000); // clear cache every 12 hours
+
+// Predetermined answers for !ask function
+let askCache = ["It is certain","It is decidedly so","Without a doubt","Yes definitely","You may rely on it",
+"As I see it, yes","Most likely","Outlook good","Yes","Signs point to yes","I'm not sure if I heard you right","Ask again later",
+"Better not tell you now","Cannot predict now","I don't know","Don't count on it","Nope!","Katalina said no",
+"Outlook not good","Very doubtful"];
+
+let chatCommands = {"!choose":choose, "!ask":ask, "!draw":draw, "!gwprelims":prelimsNotif, "!gwfinals":gwfinalsMessage, "!help":helpMessageFormat,
+"!h":helpMessageFormat, "!skills":getSkills, "!skill":getSkills, "!supports":getSupportSkills, "!support":getSupportSkills, "!passive":getSupportSkills, "!passives":getSupportSkills};
+
+var rule = new schedule.RecurrenceRule();
+rule.hour = 19;
+rule.minute = 55;
+
+
+var scheduleExecute = schedule.scheduleJob(rule, function() {
+  const ch = bot.guilds.get(auth.server_id, 'Endgame GBF');
+  if (!ch){
+    console.log("channel not found");
+    return;
+  }
+  ch.defaultChannel.send("@here Never forgetti, Twitter resetti");
+})
+
+bot.on("message", msg => { //event handler for a message
+  let prefix = "!"; //prefix for the bot
+
+  if(msg.author.bot) return; //exit if bot sends a message
+
+  const channel = msg.channel;
+
+  //begin main functionality
+
+  var content = msg.cleanContent;
+  var result, re = /\[\[(.*?)\]\]/g;//regex
+    while ((result = re.exec(content)) != null) {
+        console.log(result);
+        if(result[1].length !== 0) {
+          searchWiki(msg, result[1]);
+        }
+    }
+  if (content === "SOIYA") {
+    msg.channel.send("SOIYA");
+  }
+  if(content.charAt(0) == prefix) {
+    var lc = content.toLowerCase();
+    var first_arg = (lc.split(" "))[0];
+
+    if (first_arg in chatCommands) {
+      chatCommands[first_arg](msg);
+    }
+    else {
+      console.log("Invalid command");
+    }
+  }
+});
+
+function searchWiki(msg, search, command) {
+  var client = new wikiSearch({ //create a new nodemw bot for gbf.wiki
+    protocol: 'https',
+    server: 'gbf.wiki',
+    path: '/',
+    debug: false
+  }),
+  paramsQuery = { //parameters for a direct api call
+    action: 'query', //action to take: query
+    prop: 'info',//property to get: info
+    inprop: 'url',//add extra info about url
+    generator: 'search',//enable searching
+    gsrsearch: search,//what to search
+    gsrlimit: 1,//take only first result
+    format: 'json', //output as .json
+    indexpageids: 1// get page ids
+  },
+  paramsSearch = {
+    action: 'opensearch',//action: opensearch for typos
+    search: search,// what to search
+    limit: 1,// only 1 result
+    format: 'json'//output as .json
+  }
+  client.api.call(paramsQuery, function(err, info, next, data) { //call api
+    console.log("querying: " + search);
+
+    try { //error returned when no such page matches exactly
+      let pageId = info["pageids"][0];
+      console.log(info["pages"][pageId].fullurl);
+      let url = info["pages"][pageId].fullurl;
+      if(command == "skill") {
+        console.log("user wants skills");
+        parseSkills(msg, data2[3], search);
+      }
+      else if(command == "support") {
+        console.log("user wants support skills");
+        parseSupportSkills(msg, data2[3], search);
+      }
+      else{
+        console.log("user wants page")
+        msg.channel.send("<" + data2[3] + ">");//output message
+      }
+    }
+    catch(TypeError) { //catch that error and use opensearch protocol
+      console.log("no exact match")
+      client.api.call(paramsSearch, function(err2, info2, next2, data2) {
+        console.log("Typo?");
+        if(!data2[3].length){//404 error url is always at 4th index
+          msg.channel.send("There is nothing in my journal about " + search);
+        }
+        else {
+          if(command == "skill") {
+            console.log("user wants skills");
+            parseSkills(msg, data2[3], search);
+          }
+          else if(command == "support") {
+            console.log("user wants support skills");
+            parseSupportSkills(msg, data2[3], search);
+          }
+          else{
+            console.log("user wants page")
+            msg.channel.send("<" + data2[3]+ ">");//output message
+          }
+        }
+      });
+    }
+  });
+}
+function inputHonors(message) {
+  var user = message.author;
+  user.send("Please send a screenshot of your honors and in the" +
+  "comment box add: !honors <honors>");
+}
+
+function parseHonors(message) {
+  var user = message.author;
+  var args = message.content.split(" ").slice(1);
+
+  if (isNaN(args[0])) {    // User input check for integer
+    user.send("Please enter a valid number.  For example, to enter 10" +
+    " million honors, type 10");
+    return;
+  }
+  if (!(message.attachments.first() == undefined)) {
+    console.log(message.attachments.first().url);
+  }
+  console.log("Username is: " + message.author["username"]);
+  console.log("Honors is: " + args[0]);
+
+}
+
+/***************************
+ * Preliminaries notification message; Simple @everyone in default channel
+ * Requires valid integer argument.
+**************************/
+function prelimsNotif(message) {
+  if (message.channel.id != auth.officer_channel) {
+    message.channel.send("Please make the command in the officers channel");
+    return;
+  }
+  var args = message.content.split(" ").slice(1);
+  if (isNaN(args[0]) || args[0] < 0) {
+    message.channel.send("Please enter a valid non negative number.");
+    return;
+  }
+  var prelimsMessage = "Guild War Preliminaries have started!\nMinimum Contribution: " + args[0] + "m";
+  bot.guilds.get(auth.server_id).defaultChannel.send(prelimsMessage);
+  //console.log(message.author);
+  //console.log((bot.guilds.get(serverID).defaultChannel.send("This is a nuke @everyone")));
+  //console.log(bot.guilds.firstKey());
+
+}
+
+/***************************
+  GW finals message
+  Notifies the default channel a message notification with @everyone of GW Finals requirements
+  Requires 3 valid arguments when using the !gwfinals command
+  First: Number 1-5
+  Second: yes or no
+  Third: Any valid number
+**************************/
+function gwfinalsMessage(message) {
+  if (message.channel.id != auth.officer_channel) {
+    message.channel.send("Please make the command in the officers channel");
+    return;
+  }
+  var args = message.content.split(" ").slice(1);
+  if (args.length != 3) {
+    message.channel.send("Make sure to fill all fields in the command.  Use '!help' for to learn more\n");
+    return;
+  }
+  if (isNaN(args[0]) || isNaN(args[2])) {
+    message.channel.send("The first and third fields need to be numbers. Use !help to learn more\n");
+    return;
+  }
+  if (args[1].toLowerCase() != "yes" && args[1].toLowerCase() != "no") {
+    message.channel.send("Please indicate 'yes' or 'no' in the second field\n");
+    return;
   }
   if (args[0] < 1 || args[0] > 5) {
     message.channel.send("First field number needs to be a 1, 2, 3, 4, or 5 to indicate Finals day\n");
@@ -77,7 +309,7 @@ function parseSkills(msg, page, search) {
 // Returns a Rich Embed using the webscraped skills data
 function skillsFormatMessage(output) {
   var embed = new Discord.RichEmbed()
-    .setAuthor("Athena","https://gamewith.akamaized.net/img/c1be44cad5b2098102848a294dcfa4f1.jpg")
+    .setAuthor("Lyria","http://i.imgur.com/pbGXrY5.png")
     .setColor("#c7f1f5");
   var outputTest = output.split(/\r?\n/);
   embed.setTitle(outputTest[0])
@@ -165,7 +397,7 @@ function parseSupportSkills(msg, page, search) {
 function skillsSupportFormatMessage(output) {
   //console.log(output);
   var embed = new Discord.RichEmbed()
-    .setAuthor("Athena","https://gamewith.akamaized.net/img/c1be44cad5b2098102848a294dcfa4f1.jpg")
+    .setAuthor("Athena")
     .setColor("#c7f1f5");
   var outputTest = output.split(/\r?\n/);
   //console.log("outputTest length is : " + outputTest.length);
@@ -206,7 +438,7 @@ function choose(message) {
   }
   var answer = validChoices[Math.floor(Math.random() * validChoices.length)];
   var embed = new Discord.RichEmbed()
-    .setAuthor("Athena","https://gamewith.akamaized.net/img/c1be44cad5b2098102848a294dcfa4f1.jpg")
+    .setAuthor("Athena")
     .setColor("#c7f1f5")
     .setDescription(answer);
   message.channel.send({embed});
@@ -220,7 +452,7 @@ function ask(message) {
     return;
   }
   var embed = new Discord.RichEmbed()
-    .setAuthor("Athena","https://gamewith.akamaized.net/img/c1be44cad5b2098102848a294dcfa4f1.jpg")
+    .setAuthor("Athena"
     .setTitle(":question:**Question**")
     .setColor("#c7f1f5")
     .setDescription(args)
@@ -234,7 +466,7 @@ function ask(message) {
 **************************/
 function helpMessageFormat(message) {
   var embed= new Discord.RichEmbed()
-    .setAuthor("Athena", "https://gamewith.akamaized.net/img/c1be44cad5b2098102848a294dcfa4f1.jpg")
+    .setAuthor("Athena")
     .setTitle("Help Section")
     .setColor("#c7f1f5")
     .setDescription("Dong-A-Long-A-Long! It\'s Athena, here to help you with anything! Here are my commands!")
@@ -269,7 +501,7 @@ function draw(message) {
   if (drawType == 1 || drawType == 10) {
     var drawResult = gacha.Gacha(drawType);
     var embed = new Discord.RichEmbed()
-      .setAuthor("Athena", "https://gamewith.akamaized.net/img/c1be44cad5b2098102848a294dcfa4f1.jpg")
+      .setAuthor("Athena")
       .setTitle("Gacha Results")
       .setColor("#c7f1f5")
       .setThumbnail("https://i.imgur.com/IQwyQUC.png")
@@ -283,4 +515,6 @@ function draw(message) {
 
 bot.on('ready', () => {
   console.log('Dong-A-Long-A-Long! It\'s Athena!');
+});
+
 });
